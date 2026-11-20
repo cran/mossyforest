@@ -1,0 +1,107 @@
+#' Detect Pairwise Interactions from a Mossy Forest Object
+#'
+#' Returns TreeSHAP pairwise interaction strengths for all stable features.
+#' Interaction values are computed during model fitting and stored in the
+#' object, either by the Python backend
+#' (\code{TreeExplainer.shap_interaction_values()}) or by the pure R backend
+#' with \code{r_shap = "treeshap"}. They are not available with
+#' \code{r_shap = "permutation"} or when \code{compute_interactions = FALSE}.
+#'
+#' The \eqn{p \times p} \strong{interaction matrix} stored in
+#' \code{object$shap_obj$interaction_matrix} is defined as:
+#' \deqn{M_{jk} = \frac{1}{n}\sum_{i=1}^{n}|\phi_{jk}(x_i)|}
+#' where \eqn{\phi_{jk}(x_i)} is the TreeSHAP interaction value for the pair
+#' \eqn{(j, k)} at observation \eqn{i} (Lundberg et al., 2018).  Diagonal
+#' entries are main effects and off diagonal entries are pairwise interactions.
+#'
+#' @param object  A \code{mossy_forest} object.
+#' @param thresh  Interaction strength threshold.  Only pairs whose mean
+#'                \eqn{|\phi_{jk}|} exceeds \code{thresh} are returned (those
+#'                above the threshold).  Set to \code{0} to return all pairs.
+#' @param all     If \code{TRUE}, return every off diagonal pair (upper
+#'                triangle) regardless of \code{thresh}.  Default \code{FALSE}.
+#' @param verbose If \code{TRUE}, print the table of above threshold pairs (or a
+#'                message if none are found). Default \code{TRUE}.
+#' @param ...     Ignored.
+#'
+#' @return A data frame with columns \code{FeatureA}, \code{FeatureB}, and
+#'   \code{Interaction_Strength} (mean absolute TreeSHAP interaction), sorted
+#'   by interaction strength descending.  Invisibly when \code{all = TRUE}.
+#'
+#' @references
+#' Lundberg, S. M., Erion, G., Chen, H., DeGrave, A., Prutkin, J. M.,
+#'   Nair, B., Katz, R., Himmelfarb, J., Bansal, N., & Lee, S.-I. (2020).
+#'   From local explanations to global understanding with explainable AI for
+#'   trees. \emph{Nature Machine Intelligence}, 2, 56-67.
+#'
+#' @examplesIf requireNamespace("treeshap", quietly = TRUE)
+#' # A small simulated regression problem with two modules of features
+#' set.seed(1)
+#' n <- 60
+#' z <- rnorm(n)
+#' X <- data.frame(a1 = z + rnorm(n, sd = 0.3), a2 = z + rnorm(n, sd = 0.3),
+#'                 a3 = z + rnorm(n, sd = 0.3), b1 = rnorm(n), b2 = rnorm(n),
+#'                 b3 = rnorm(n))
+#' y <- z + rnorm(n, sd = 0.3)
+#' membership <- c(a1 = "A", a2 = "A", a3 = "A", b1 = "B", b2 = "B", b3 = "B")
+#'
+#' # The pure R backend needs no Python installation
+#' fit <- mf(X, y, module_membership = membership,
+#'           screen_params = screen_control(min_ntree = 50),
+#'           select_params = select_control(n_reps = 10, min_ntree = 50),
+#'           final_ntree = 50, backend = "R", r_shap = "treeshap", verbose = 0, seed = 1)
+#' detect_interaction(fit)
+#' @export
+detect_interaction <- function(object, thresh = 0, all = FALSE,
+                                verbose = TRUE, ...) {
+
+  int_mat <- object$shap_obj$interaction_matrix
+  if (is.null(int_mat) || !is.matrix(int_mat))
+    stop(paste0(
+      "No interaction matrix found in this mossy_forest object.\n",
+      "  Refit with mf(), interaction values are computed automatically ",
+      "during the final SHAP pass."
+    ), call. = FALSE)
+
+  feats <- rownames(int_mat)
+  p     <- length(feats)
+  if (p < 2L)
+    stop("At least two stable features are required to report interactions.",
+         call. = FALSE)
+
+  # builds upper triangle
+  rows <- vector("list", p * (p - 1L) / 2L)
+  k    <- 1L
+  for (j in seq_len(p - 1L)) {
+    for (l in (j + 1L):p) {
+      rows[[k]] <- data.frame(
+        FeatureA             = feats[j],
+        FeatureB             = feats[l],
+        Interaction_Strength = int_mat[j, l],
+        stringsAsFactors     = FALSE
+      )
+      k <- k + 1L
+    }
+  }
+  all_pairs <- do.call(rbind, rows)
+  all_pairs <- all_pairs[order(-all_pairs$Interaction_Strength), ]
+  rownames(all_pairs) <- NULL
+
+  if (all) return(invisible(all_pairs))
+
+  # filters by defined threshold
+  sig_pairs <- all_pairs[all_pairs$Interaction_Strength > thresh, , drop = FALSE]
+  rownames(sig_pairs) <- NULL
+
+  if (verbose) {
+    if (nrow(sig_pairs) > 0L)
+      print(sig_pairs)
+    else
+      message(sprintf(
+        "No interactions found above threshold (%.4g). ",
+        thresh
+      ), "Use a lower thresh or all=TRUE to see all pairs.")
+  }
+
+  invisible(sig_pairs)
+}
